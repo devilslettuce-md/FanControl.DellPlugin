@@ -1,0 +1,69 @@
+name: Build FanControl.DellPlugin
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Download FanControl release (to get FanControl.Plugins.dll)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/Rem0o/FanControl.Releases/raw/master/FanControl.zip"
+          Invoke-WebRequest -Uri $url -OutFile "FanControl.zip"
+          Expand-Archive -Path "FanControl.zip" -DestinationPath "FanControlRelease" -Force
+
+      - name: Copy FanControl.Plugins.dll to expected location
+        shell: pwsh
+        run: |
+          # Show what's in the extracted zip so we can find the DLL
+          Get-ChildItem -Recurse "FanControlRelease" | Select-Object FullName
+          # Copy to repo root so the .csproj HintPath can find it
+          $dll = Get-ChildItem -Recurse "FanControlRelease" -Filter "FanControl.Plugins.dll" | Select-Object -First 1
+          if ($dll) {
+            Copy-Item $dll.FullName -Destination "." -Force
+            Write-Host "Copied $($dll.FullName)"
+          } else {
+            Write-Error "FanControl.Plugins.dll not found in release zip!"
+            exit 1
+          }
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Collect output files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "plugin-output"
+          # Copy all files from bin/Release output (any TFM subfolder)
+          Get-ChildItem -Recurse -Path "." -Filter "*.dll" |
+            Where-Object { $_.FullName -match "bin.Release" -and $_.Name -like "FanControl.DellPlugin*" } |
+            ForEach-Object { Copy-Item $_.FullName -Destination "plugin-output\" -Force }
+          # Also grab any native/dependency DLLs in the bin/Release folder
+          Get-ChildItem -Recurse -Path "." |
+            Where-Object { $_.FullName -match "bin.Release" -and $_.Extension -in ".dll",".pdb" } |
+            ForEach-Object { Copy-Item $_.FullName -Destination "plugin-output\" -Force }
+          Write-Host "Files in plugin-output:"
+          Get-ChildItem "plugin-output"
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FanControl.DellPlugin
+          path: plugin-output/
+          if-no-files-found: error
